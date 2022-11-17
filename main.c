@@ -105,6 +105,13 @@ extern void pushStack();
 extern void popStack();
 extern void pushPsp(uint32_t r0);
 
+typedef enum svcNum
+{ YIELD = 10,
+  SLEEP = 11,
+  WAIT  = 12,
+  POST  = 13
+}svcNumber;
+
 //-----------------------------------------------------------------------------
 // RTOS Defines and Kernel Variables
 //-----------------------------------------------------------------------------
@@ -256,6 +263,14 @@ void setupSramAccess(void)
     NVIC_MPU_BASE_R = REGION6 | NVIC_MPU_BASE_VALID | SRAM_REGION_BASE3;
     NVIC_MPU_ATTR_R = NVIC_MPU_ATTR_ENABLE | REGION_SIZE(SIZE_8KB) | NVIC_MPU_ATTR_CACHEABLE | NVIC_MPU_ATTR_SHAREABLE | AP_RW_PRIVILEGED_ONLY;
 
+}
+
+uint8_t getSvcNumber()
+{
+    uint32_t* psp = getPsp();
+    uint8_t N = *(uint16_t*)(*(psp + 6) - 2) & 0xFF;
+
+    return N;
 }
 
 // REQUIRED: initialize MPU here
@@ -438,7 +453,7 @@ void startRtos()
 // REQUIRED: modify this function to yield execution back to scheduler using pendsv
 void yield()
 {
-    putcUart0('y');
+//    putcUart0('y');
     __asm(" SVC  #10");
 
 }
@@ -447,29 +462,46 @@ void yield()
 // execution yielded back to scheduler until time elapses using pendsv
 void sleep(uint32_t tick)
 {
+    __asm(" SVC  #11");
 }
 
 // REQUIRED: modify this function to wait a semaphore using pendsv
 void wait(int8_t semaphore)
 {
+    __asm(" SVC  #12");
 }
 
 // REQUIRED: modify this function to signal a semaphore is available using pendsv
 void post(int8_t semaphore)
 {
+    __asm(" SVC  #13");
 }
 
 // REQUIRED: modify this function to add support for the system timer
 // REQUIRED: in preemptive code, add code to request task switch
 void systickIsr()
 {
+    uint8_t i;
+
+    for(i = 0; i <= taskCount; i++)
+    {
+        if (tcb[i].state == STATE_DELAYED)
+        {
+            if (tcb[i].ticks == 0)
+            {
+                tcb[i].state = STATE_READY;
+            }
+            tcb[i].ticks--;
+        }
+    }
+
 }
 
 // REQUIRED: in coop and preemptive, modify this function to add support for task switching
 // REQUIRED: process UNRUN and READY tasks differently
 void pendSvIsr()
 {
-
+/*
     putcUart0('p');
 
     pushStack();
@@ -480,13 +512,14 @@ void pendSvIsr()
     setSRAMBits(tcb[taskCurrent].srd);
     setPSP((uint32_t)tcb[taskCurrent].sp);
     popStack();
+*/
 
-/*
     pushStack();
     tcb[taskCurrent].sp = (void*)getPsp();
     taskCurrent = (uint8_t)rtosScheduler();
 
-    setSRAMBits(tcb[taskCurrent].srd);
+//    setSRAMBits(tcb[taskCurrent].srd);
+    setSRAMBits(0xFFFFFFFF);  // currently giving access to the entire SRAM
 
     if(tcb[taskCurrent].state == STATE_READY)
     {
@@ -507,7 +540,7 @@ void pendSvIsr()
         pushPsp(0x00);                              // R1
         pushPsp(0x00);                              // R0
     }
-*/
+
 
 }
 
@@ -515,8 +548,61 @@ void pendSvIsr()
 // REQUIRED: in preemptive code, add code to handle synchronization primitives
 void svCallIsr()
 {
-    putcUart0('s');
-    NVIC_INT_CTRL_R |= NVIC_INT_CTRL_PEND_SV;
+    uint8_t num;
+    uint32_t* psp;
+    uint8_t currentTaskInQueue;
+    uint8_t i = 0;
+
+    psp = getPsp();
+//    num = getSvcNumber();
+    num = *(uint16_t*)(*(psp + 6) - 2) & 0xFF;
+
+    switch(num)
+    {
+    case YIELD:
+        NVIC_INT_CTRL_R |= NVIC_INT_CTRL_PEND_SV;       // Call the pendsv ISR
+        break;
+
+    case SLEEP:
+        tcb[taskCurrent].ticks = *psp;
+        tcb[taskCurrent].state = STATE_DELAYED;
+        NVIC_INT_CTRL_R |= NVIC_INT_CTRL_PEND_SV;       // Call the pendsv ISR
+        break;
+
+    case WAIT:
+        if(semaphores[*psp].count > 0)
+        {
+            semaphores[*psp].count--;
+        }
+        else
+        {
+            if(semaphores[*psp].queueSize < MAX_QUEUE_SIZE)
+            {
+                semaphores[*psp].processQueue[semaphores[*psp].queueSize++] = taskCurrent;
+                tcb[taskCurrent].semaphore = (void*)(semaphores + *psp);
+                tcb[taskCurrent].state = STATE_BLOCKED;
+                NVIC_INT_CTRL_R |= NVIC_INT_CTRL_PEND_SV;
+            }
+        }
+        break;
+
+    case POST:
+        // Increment the count for the selected semaphore
+        semaphores[*psp].count++;
+
+        if(semaphores[*psp].count >= 1 && semaphores[*psp].queueSize > 0)
+        {
+            currentTaskInQueue = semaphores[*psp].processQueue[0];
+            semaphores[*psp].count--;
+            tcb[currentTaskInQueue].state = STATE_READY;
+            for(i = 0; i < semaphores[*psp].queueSize - 1; i++)
+            {
+                semaphores[*psp].processQueue[i] = semaphores[*psp].processQueue[i + 1];
+            }
+            semaphores[*psp].queueSize--;
+        }
+        break;
+    }
 }
 
 // REQUIRED: code this function
@@ -669,6 +755,12 @@ void initHw()
     enablePinPullup(PUSH_BUTTON5);
     selectPinDigitalInput(PUSH_BUTTON6);
     enablePinPullup(PUSH_BUTTON6);
+
+    //Initialise the systick timer
+    NVIC_ST_CTRL_R |= NVIC_ST_CTRL_CLK_SRC | NVIC_ST_CTRL_INTEN | NVIC_ST_CTRL_ENABLE;
+    NVIC_ST_RELOAD_R = (0x9C3F) & (0x00FFFFFF);
+
+
 }
 
 // REQUIRED: add code to return a value from 0-63 indicating which of 6 PBs are pressed
@@ -713,7 +805,16 @@ uint8_t readPbs()
 // YOUR UNIQUE CODE
 // REQUIRED: add any custom code in this space
 //-----------------------------------------------------------------------------
-
+void idle2()
+{
+    while(true)
+    {
+        setPinValue(RED_LED, 1);
+        waitMicrosecond(1000);
+        setPinValue(RED_LED, 0);
+        yield();
+    }
+}
 
 
 // ------------------------------------------------------------------------------
@@ -895,6 +996,7 @@ int main(void)
 
     // Initialize hardware
     initHw();
+
     initUart0();
     initMpu();
     initRtos();
@@ -916,13 +1018,14 @@ int main(void)
 
     // Add required idle process at lowest priority
     ok =  createThread(idle, "Idle", 7, 1024);
+//    ok &=  createThread(idle2, "Idle2", 7, 1024);
 
     // Add other processes
-    ok &= createThread(lengthyFn, "LengthyFn", 6, 1024);
+//    ok &= createThread(lengthyFn, "LengthyFn", 6, 1024);
     ok &= createThread(flash4Hz, "Flash4Hz", 4, 1024);
-//    ok &= createThread(oneshot, "OneShot", 2, 1024);
-//    ok &= createThread(readKeys, "ReadKeys", 6, 1024);
-//    ok &= createThread(debounce, "Debounce", 6, 1024);
+    ok &= createThread(oneshot, "OneShot", 2, 1024);
+    ok &= createThread(readKeys, "ReadKeys", 6, 1024);
+    ok &= createThread(debounce, "Debounce", 6, 1024);
 //    ok &= createThread(important, "Important", 0, 1024);
 //    ok &= createThread(uncooperative, "Uncoop", 6, 1024);
 //    ok &= createThread(errant, "Errant", 6, 1024);
