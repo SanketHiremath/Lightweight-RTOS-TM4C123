@@ -106,10 +106,15 @@ extern void popStack();
 extern void pushPsp(uint32_t r0);
 
 typedef enum svcNum
-{ YIELD = 10,
-  SLEEP = 11,
-  WAIT  = 12,
-  POST  = 13
+{ YIELD   = 10,
+  SLEEP   = 11,
+  WAIT    = 12,
+  POST    = 13,
+  MALLOC  = 14,
+  REBOOT  = 15,
+  SCHED   = 16,
+  PREEMPT = 17,
+  SETDATA    = 18
 }svcNumber;
 
 //-----------------------------------------------------------------------------
@@ -142,10 +147,26 @@ semaphore semaphores[MAX_SEMAPHORES];
 #define STATE_DELAYED    3 // has run, but now awaiting timer
 #define STATE_BLOCKED    4 // has run, but now blocked by semaphore
 
-#define MAX_TASKS 12       // maximum number of valid tasks
+#define MAX_TASKS   12       // maximum number of valid tasks
+#define ROUND_ROBIN 0
+#define PRIORITY    1
+uint8_t activeScheduler = ROUND_ROBIN;
+uint8_t preemptionMode = 0;
 uint8_t taskCurrent = 0;   // index of last dispatched task
 uint8_t taskCount = 0;     // total number of valid tasks
 static uint32_t task_point;
+static uint32_t prevSrdBits = 0;
+
+struct _semaphoreData
+{
+    char semaphoreName[12];
+    uint16_t semaphoreCount;
+    uint16_t waitingTaskNumber;
+    uint32_t waitQueue[5];
+
+};
+
+typedef struct _semaphoreData semaphoreInfo;
 
 
 // REQUIRED: add store and management for the memory used by the thread stacks
@@ -172,6 +193,7 @@ struct _tcb
 // TODO: add your malloc code here and update the SRD bits for the current thread
 void * mallocFromHeap(uint32_t size_in_bytes)
 {
+
 //    static void *heap = 0x20001800;
     uint32_t num;
     static uint32_t prevAddr =  0x20001800;;
@@ -190,7 +212,8 @@ void sramSubregionToggle(uint8_t regionNum, uint8_t mask)
 {
 
     NVIC_MPU_NUMBER_R = regionNum;
-    NVIC_MPU_ATTR_R = NVIC_MPU_ATTR_ENABLE | REGION_SIZE(SIZE_8KB) | NVIC_MPU_ATTR_CACHEABLE | NVIC_MPU_ATTR_SHAREABLE | AP_RW_PRIVILEGED_ONLY | ((uint32_t)mask << 8);
+    NVIC_MPU_ATTR_R = NVIC_MPU_ATTR_ENABLE | REGION_SIZE(SIZE_8KB) | NVIC_MPU_ATTR_CACHEABLE | NVIC_MPU_ATTR_SHAREABLE | AP_RW_PRIVILEGED_ONLY ;
+    NVIC_MPU_ATTR_R |=  ((uint32_t)mask << 8);
 }
 
 void setSRAMBits(uint32_t bit_mask)
@@ -282,7 +305,59 @@ void initMpu(void)
     allowFlashAccess();                                     // Setting background rule for 256KiB flash.
     setupSramAccess();                                      // Dividing SRAM into 4 regions & setting access rules.
     enableMPU();
+}
 
+void copyString(const char* fromStr, char* toStr)
+{
+    uint8_t i = 0;
+
+    for(i = 0; fromStr[i] != '\0' && i < 16; i++)
+    {
+        toStr[i] = fromStr[i];
+    }
+
+    toStr[i] = '\0';
+}
+
+void getIpcsData(struct _semaphoreData* semaphoreFrame)
+{
+    uint8_t i,j;
+/*
+    putsUart0("SemaphoreName |");
+    putsUart0(" Count |");
+    putsUart0(" Who's-waiting? \n\r");
+
+    for(i = 0; i < MAX_SEMAPHORES; i++)
+    {
+        convertNumToString(semaphores[i].count);
+        putsUart0("   ");
+        convertNumToString(semaphores[i].queueSize);
+        putsUart0("   ");
+        for( j = 0; j < MAX_QUEUE_SIZE; j++)
+        {
+            convertNumToString(semaphores[i].processQueue[j]);
+            putsUart0("\n\r");
+        }
+
+    }
+*/
+
+    for(i = 0; i < MAX_SEMAPHORES; i++)
+    {
+        semaphoreFrame[i].semaphoreCount = semaphores[i].count;
+        semaphoreFrame[i].waitingTaskNumber = semaphores[i].queueSize;
+        uint8_t j = 0;
+        for(; j < semaphores[i].queueSize; j++)
+            semaphoreFrame[i].waitQueue[j] = semaphores[i].processQueue[j];
+    }
+
+
+
+    copyString("null\0", semaphoreFrame[0].semaphoreName);
+    copyString("keyPressed\0", semaphoreFrame[1].semaphoreName);
+    copyString("keyReleased\0", semaphoreFrame[2].semaphoreName);
+    copyString("flashReq\0", semaphoreFrame[3].semaphoreName);
+    copyString("resource\0", semaphoreFrame[4].semaphoreName);
 
 }
 
@@ -327,7 +402,7 @@ bool createThread(_fn fn, const char name[], uint8_t priority, uint32_t stackByt
     uint32_t* heap = (uint32_t*)0x20001400;
     uint32_t addr;
     uint32_t* tempAddr;
-    static uint32_t prevSrdBits = 0;
+//    static uint32_t prevSrdBits = 0;
 //    uint32_t* brk = (uint32_t*)0x20007FFF;
 
     bool ok = false;
@@ -370,22 +445,24 @@ bool createThread(_fn fn, const char name[], uint8_t priority, uint32_t stackByt
                 putsUart0("\n\r");
              }
 
+
+            tcb[i].sp = (void*)(addr + (num * 1024)-1);
+            tcb[i].spInit = (void*)(addr + (num * 1024)-1);
+
             // Calculating the SRD bits
-            subregionNum = (addr - (0x20000000)) / 1024;  // Calculate no. of times to shift
+            subregionNum = ((uint32_t)(tcb[i].spInit) - (0x20000000)) / 1024;  // Calculate no. of times to shift
             stackBytes = stackBytes / 1024;               // Calculate no. of bits to flip
             bitMask = (1 << stackBytes) - 1;              // Calculate the number of SRD bits to be high
             bitMask = (bitMask << subregionNum);          // Moving the bits to the correct subregion.
-            prevSrdBits = prevSrdBits | bitMask;          // New bitmask is ORed with the previous bitmask.
+//            prevSrdBits = prevSrdBits | bitMask;          // New bitmask is ORed with the previous bitmask.
 
-            tcb[i].sp = (void*)(addr + (num * 1024));
-            tcb[i].spInit = (void*)(addr + (num * 1024));
 
             putsUart0("spinit= ");
             convertDec_Hex((uint32_t) tcb[i].spInit);
             putsUart0("\n\r");
 
             tcb[i].priority = priority;
-            tcb[i].srd = (prevSrdBits);
+            tcb[i].srd = (bitMask);
 
 //            convertDec_Hex((uint32_t) tcb[i].srd);
 //            putsUart0("\n\r");
@@ -440,10 +517,12 @@ void startRtos()
     _fn fn = (_fn)tcb[taskCurrent].pid;
     tcb[taskCurrent].state = STATE_READY;
 
-//    setSRAMBits(tcb[taskCurrent].srd);
-    setSRAMBits(0xFFFFFFFF);
-    convertDec_Hex((uint32_t) tcb[taskCurrent].srd);
-    putsUart0("\n\r");
+
+//    setSRAMBits(0xFFFFFFFF);
+    prevSrdBits = prevSrdBits | tcb[taskCurrent].srd;
+    setSRAMBits(prevSrdBits);
+//    convertDec_Hex((uint32_t) tcb[taskCurrent].srd);
+//    putsUart0("\n\r");
 
     // Turning on the TMPL bit and calling the function
     disablePrivileged();
@@ -518,8 +597,11 @@ void pendSvIsr()
     tcb[taskCurrent].sp = (void*)getPsp();
     taskCurrent = (uint8_t)rtosScheduler();
 
-//    setSRAMBits(tcb[taskCurrent].srd);
-    setSRAMBits(0xFFFFFFFF);  // currently giving access to the entire SRAM
+
+
+   prevSrdBits = prevSrdBits | tcb[taskCurrent].srd;
+   setSRAMBits(prevSrdBits);
+//   setSRAMBits(0xFFFFFFFF);  // currently giving access to the entire SRAM
 
     if(tcb[taskCurrent].state == STATE_READY)
     {
@@ -548,10 +630,17 @@ void pendSvIsr()
 // REQUIRED: in preemptive code, add code to handle synchronization primitives
 void svCallIsr()
 {
-    uint8_t num;
-    uint32_t* psp;
-    uint8_t currentTaskInQueue;
     uint8_t i = 0;
+    uint8_t num;
+    uint8_t currentTaskInQueue;
+    uint32_t sizeInBytes;
+    uint32_t subregionNum, bitMask, stackBytes;
+    uint32_t* psp;
+    uint32_t prevAddr;
+    uint32_t* stack = (uint32_t*)0x20006000;
+    uint32_t srd;
+    uint32_t type;
+
 
     psp = getPsp();
 //    num = getSvcNumber();
@@ -587,8 +676,7 @@ void svCallIsr()
         break;
 
     case POST:
-        // Increment the count for the selected semaphore
-        semaphores[*psp].count++;
+        semaphores[*psp].count++;       // Increment the count for the selected semaphore
 
         if(semaphores[*psp].count >= 1 && semaphores[*psp].queueSize > 0)
         {
@@ -602,6 +690,76 @@ void svCallIsr()
             semaphores[*psp].queueSize--;
         }
         break;
+
+    case MALLOC:
+        sizeInBytes = *psp;     //Get the size stored in the R0 register
+        prevAddr = (uint32_t)stack;
+        num = (((sizeInBytes - 1) / 1024) + 1);
+
+        prevAddr = (prevAddr + (num * 1024)-1);
+
+
+        subregionNum = ((uint32_t)prevAddr - (0x20000000)) / 1024;  // Calculate no. of times to shift
+        sizeInBytes = sizeInBytes / 1024;               // Calculate no. of bits to flip
+        bitMask = (1 << sizeInBytes) - 1;              // Calculate the number of SRD bits to be high
+        bitMask = (bitMask << subregionNum);          // Moving the bits to the correct subregion.
+
+        prevSrdBits = prevSrdBits | bitMask;
+        setSRAMBits(prevSrdBits);
+
+        *psp = (uint32_t)prevAddr;
+
+        break;
+
+    case REBOOT:
+        NVIC_APINT_R = (0x05FA0000 | NVIC_APINT_SYSRESETREQ);
+        break;
+
+    case SCHED:
+        if((bool)(*psp) == 1)
+        {
+            activeScheduler = PRIORITY;
+            putsUart0("sched prio\n\r");
+            putsUart0("\r\n>");
+        }
+        else
+        {
+            activeScheduler = ROUND_ROBIN;
+            putsUart0("sched rr\n\r");
+            putsUart0("\r\n>");
+        }
+        break;
+
+    case PREEMPT:
+        if((bool)(*psp) == 1)
+        {
+            preemptionMode = 1;
+            putsUart0("preempt on\n\r");
+            putsUart0("\r\n>");
+        }
+        else
+        {
+            preemptionMode = 0;
+            putsUart0("preempt off\n\r");
+            putsUart0("\r\n>");
+
+        }
+        break;
+
+    case SETDATA:
+    {
+        struct _semaphoreData* arguments = (struct _semaphoreData*)*psp;
+        type = (*(psp + 1));
+
+        if (type == 1)
+        {
+            getIpcsData(arguments);
+        }
+
+    }
+    break;
+
+
     }
 }
 
@@ -816,6 +974,43 @@ void idle2()
     }
 }
 
+int8_t priNextTask[MAX_TASKS];
+uint8_t level = 0;
+
+void sortTaskPriorities()
+{
+    for(level = 0; level < MAX_TASKS; level++)
+        priNextTask[level] = -1;
+    level = 0;
+    int8_t priority = 0;
+    uint8_t j = 0;
+    // The max priority level is 7
+    for(priority = 0; priority <= 7; priority++)
+        for(j = 0; j < taskCount && j < MAX_TASKS; j++)
+            if(tcb[j].priority == priority)
+                priNextTask[level++] = j;
+    level = 0;
+}
+
+int priorityScheduler()
+{
+    bool ok = false;
+    while(!ok)
+    {
+        if(level >= taskCount)
+            level = 0;
+        ok = (tcb[priNextTask[level]].state == STATE_READY || tcb[priNextTask[level]].state == STATE_UNRUN);
+        level++;
+    }
+    return priNextTask[level - 1];
+}
+
+void* mallocFromHeap_UserSpace(uint32_t size_in_bytes)
+{
+    __asm(" SVC  #14");
+}
+
+
 
 // ------------------------------------------------------------------------------
 //  Task functions
@@ -869,7 +1064,7 @@ void lengthyFn()
 
     // Example of allocating memory from stack
     // This will show up in the pmap command for this thread
-    p = mallocFromHeap(1024);
+    p = mallocFromHeap_UserSpace(1024);
     *p = 0;
 
     while(true)
@@ -979,10 +1174,124 @@ void important()
 }
 
 // REQUIRED: add processing for the shell commands through the UART here
+
+void getData(semaphoreInfo* semDataForm,uint32_t type)
+{
+   __asm(" SVC  #18");
+}
+
+/*
+void ipcs(semaphoreInfo* semDataForm)
+{
+    putsUart0("\r\n>");
+    __asm(" SVC  #18");
+}
+*/
+
 void shell()
 {
+  inputData data;
+  uint32_t* ipcsData;
+
+
+    putsUart0("\r\n>");
+
     while (true)
     {
+        getString(&data);
+
+        if (matchCommand(&data, "kill", 1))
+        {
+            int32_t testNum = getNum(&data);
+//            kill(testNum);
+        }
+        else if (matchCommand(&data, "reboot", 0))
+        {
+            rebootMCU();
+        }
+        else if (matchCommand(&data, "ps", 0))
+        {
+//            ps();
+        }
+        else if (matchCommand(&data, "ipcs", 0))
+        {
+            uint8_t i, j;
+            semaphoreInfo semDataForm[5];
+//            ipcs(semDataForm);
+            putsUart0("Semaphore Name");
+            putsUart0(" Count");
+            putsUart0(" Who's waiting? \n\r");
+            getData(semDataForm, 1);
+
+            i = 0;
+            for(; i < 5; i++)
+            {
+                printfString(14, semDataForm[i].semaphoreName);
+                convertNumToString(semDataForm[i].semaphoreCount);
+                j = 0;
+                for(; j < semDataForm[i].waitingTaskNumber; j++)
+                    convertNumToString(semDataForm[i].waitQueue[j]);
+                putcUart0('\n');
+            }
+
+
+        }
+        else if (matchCommand(&data, "kill", 1))
+        {
+
+            if (matchCommandArg(&data, "pid"))
+            {
+//                kill(1);
+
+            }
+        }
+        else if (matchCommand(&data, "pmap", 1))
+        {
+            if (matchCommandArg(&data, "pid"))
+            {
+//                pmap(1);
+
+            }
+        }
+        else if (matchCommand(&data, "preempt", 1))
+        {
+            if (matchCommandArg(&data, "on"))
+            {
+                preempt(1);
+
+            }
+            else if (matchCommandArg(&data, "off"))
+            {
+                preempt(0);
+
+            }
+        }
+        else if (matchCommand(&data, "sched", 1))
+        {
+            if (matchCommandArg(&data, "prio"))
+            {
+                sched(1);
+            }
+            else if (matchCommandArg(&data, "rr"))
+            {
+                sched(0);
+
+            }
+        }
+        else if (matchCommand(&data, "pidof", 1))
+        {
+            if (matchCommandArg(&data, "proc_name"))
+            {
+//                pidof("test");
+            }
+        }
+        else if (matchCommand(&data, "run", 1))
+        {
+            if (matchCommandArg(&data, "proc_name"))
+            {
+                setPinValue(RED_LED, 1);
+            }
+        }
     }
 }
 
@@ -1021,15 +1330,15 @@ int main(void)
 //    ok &=  createThread(idle2, "Idle2", 7, 1024);
 
     // Add other processes
-//    ok &= createThread(lengthyFn, "LengthyFn", 6, 1024);
+    ok &= createThread(lengthyFn, "LengthyFn", 6, 1024);
     ok &= createThread(flash4Hz, "Flash4Hz", 4, 1024);
     ok &= createThread(oneshot, "OneShot", 2, 1024);
     ok &= createThread(readKeys, "ReadKeys", 6, 1024);
     ok &= createThread(debounce, "Debounce", 6, 1024);
-//    ok &= createThread(important, "Important", 0, 1024);
-//    ok &= createThread(uncooperative, "Uncoop", 6, 1024);
-//    ok &= createThread(errant, "Errant", 6, 1024);
-//    ok &= createThread(shell, "Shell", 6, 2048);
+    ok &= createThread(important, "Important", 0, 1024);
+    ok &= createThread(uncooperative, "Uncoop", 6, 1024);
+    ok &= createThread(errant, "Errant", 6, 1024);
+    ok &= createThread(shell, "Shell", 6, 2048);
 
     // Start up RTOS
     if (ok)

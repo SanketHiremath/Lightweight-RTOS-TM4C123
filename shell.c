@@ -11,9 +11,10 @@
 
 
 
-char c;
+//char c;
 char str[maxChar] = {};
 int32_t testNum;
+
 
 
 
@@ -22,7 +23,8 @@ int32_t testNum;
   */
 void rebootMCU()
 {
-    NVIC_APINT_R = (0x05FA0000 | NVIC_APINT_SYSRESETREQ);
+    __asm(" SVC  #15");
+
 }
 
 /**
@@ -38,12 +40,7 @@ void ps()
 /**
   * @brief  Displays the inter-process (thread) communication status.
   */
-void ipcs()
-{
-    putsUart0("IPCS called\n\r");
-    putsUart0("\r\n>");
 
-}
 
 /**
   * @brief  Kills the process (thread) with the matching PID.
@@ -71,17 +68,8 @@ void pmap(uint32_t pid)
   */
 void preempt(bool on)
 {
-    if(on == 1)
-    {
-        putsUart0("preempt on\n\r");
-        putsUart0("\r\n>");
-    }
-    else
-    {
-        putsUart0("preempt off\n\r");
-        putsUart0("\r\n>");
 
-    }
+    __asm(" SVC  #17");
 
 }
 
@@ -91,16 +79,7 @@ void preempt(bool on)
   */
 void sched(bool prio_on)
 {
-    if(prio_on == 1)
-    {
-        putsUart0("sched prio\n\r");
-        putsUart0("\r\n>");
-    }
-    else
-    {
-        putsUart0("sched rr\n\r");
-        putsUart0("\r\n>");
-    }
+    __asm(" SVC  #16");
 
 }
 
@@ -117,6 +96,14 @@ void pidof(const char name[])
 
 
 //----------------------------------------------------------------//
+
+uint32_t strLen(const char* str)
+{
+    uint32_t len = 0;
+    while(str[len]) len++;
+    return len;
+}
+
 void convertDec_Hex(uint32_t decNum)
 {
 
@@ -169,16 +156,14 @@ void convertNumToString(uint32_t num)
     }
 }
 
-void copyString(const char* fromStr, char* toStr)
+
+
+void printfString(uint8_t spaceToReserve, char* s)
 {
-    uint8_t i = 0;
-
-    for(i = 0; fromStr[i] != '\0' && i < 16; i++)
-    {
-        toStr[i] = fromStr[i];
-    }
-
-    toStr[i] = '\0';
+    putsUart0(s);
+    spaceToReserve -= strLen(s);
+    while(spaceToReserve--)
+        putcUart0(' ');
 }
 
 /**
@@ -194,7 +179,7 @@ void getString(inputData* data)
 
     while(true)
     {
-    c = getcUart0();
+    char c = getcUart0();
 
     // when pressed enter or /r
     if (c == 13)
@@ -342,6 +327,7 @@ int32_t getNum(inputData* data)
 /**
   * @brief This function will run the CLI process.
   */
+/*
 void runShell()
 {
     bool testdata;
@@ -460,3 +446,4 @@ void runShell()
 
     }
 }
+*/

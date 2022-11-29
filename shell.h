@@ -18,6 +18,7 @@ typedef struct input_data
 }inputData;
 
 
+
 void getString(inputData* data);
 bool matchCommand(inputData* data, char userCommand[], uint8_t mode);
 bool matchCommandArg(inputData* data, char userArgument[]);
@@ -25,7 +26,7 @@ int32_t getNum(inputData* data);
 void runShell();
 void rebootMCU();
 void ps();
-void ipcs();
+//void ipcs(semaphoreInfo* DATA);
 void kill(uint32_t pid);
 void pmap(uint32_t pid);
 void preempt(bool on);
@@ -34,6 +35,7 @@ void pidof(const char name[]);
 void convertNumToString(uint32_t num);
 void convertDec_Hex(uint32_t decNum);
 void copyString(const char* fromStr, char* toStr);
+void printfString(uint8_t spaceToReserve, char* s);
 
 
 #endif
