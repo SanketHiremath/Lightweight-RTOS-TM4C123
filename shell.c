@@ -38,21 +38,6 @@ void ps()
 }
 
 /**
-  * @brief  Displays the inter-process (thread) communication status.
-  */
-
-
-/**
-  * @brief  Kills the process (thread) with the matching PID.
-  * @param  pid: PID id number.
-  */
-void kill(uint32_t pid)
-{
-    putsUart0("PID killed\n\r");
-    putsUart0("\r\n>");
-}
-
-/**
   * @brief  Displays memory usage by the process (thread) with the matching PID.
   * @param  pid: PID id number.
   */
@@ -62,35 +47,16 @@ void pmap(uint32_t pid)
     putsUart0("\r\n>");
 }
 
-/**
-  * @brief  Turns preemption on or off.
-  * @param  on: 1-on / 0-off
-  */
-void preempt(bool on)
-{
 
-    __asm(" SVC  #17");
-
-}
-
-/**
-  * @brief  Selected priority or round-robin scheduling.
-  * @param  prio_on: 1-scheduled priority selected / 0-scheduled round robin selected
-  */
-void sched(bool prio_on)
-{
-    __asm(" SVC  #16");
-
-}
 
 /**
   * @brief  Displays the PID of the process (thread).
   * @param  name: Process name.
   */
-void pidof(const char name[])
+void pidof(uint32_t* pidNum, char name[])
 {
-    putsUart0("proc_name launched\n\r");
     putsUart0("\r\n>");
+    __asm(" SVC  #20");
 }
 
 
@@ -157,13 +123,34 @@ void convertNumToString(uint32_t num)
 }
 
 
-
+//change
 void printfString(uint8_t spaceToReserve, char* s)
 {
     putsUart0(s);
     spaceToReserve -= strLen(s);
     while(spaceToReserve--)
         putcUart0(' ');
+}
+
+/**
+  * @brief This function compares each character of  "fromStrCompare" with "toStrCompare".
+
+  */
+bool compareString(const char fromStrCompare[], const char toStrCompare[], uint8_t strSize)
+{
+    uint8_t index = 0;
+
+
+    while((fromStrCompare[index] != '\0') && (toStrCompare[index] != '\0') && (index < strSize))
+    {
+        if(fromStrCompare[index] != toStrCompare[index])
+        {
+            return false;
+        }
+        index++;
+    }
+
+    return true;
 }
 
 /**
@@ -269,10 +256,11 @@ bool matchCommand(inputData* data, char userCommand[], uint8_t mode)
   * @param   userArgument: A string which will be compared to the argument entered by the user.
   * @retval  True if the user entered argument matches the string in the @param "userArgument".
   */
+
 bool matchCommandArg(inputData* data, char userArgument[])
 {
     uint8_t index = 0;
-    static uint8_t count;
+    uint8_t count;
     uint8_t i;
 
         index = 0;
@@ -306,7 +294,7 @@ int32_t getNum(inputData* data)
 {
     int32_t signedInteger32bits = 0;
     uint8_t index = 0;
-    static uint8_t count;
+    uint8_t count;
     uint8_t i;
 
     count = data->bufferIndex + 1;

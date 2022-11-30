@@ -114,7 +114,11 @@ typedef enum svcNum
   REBOOT  = 15,
   SCHED   = 16,
   PREEMPT = 17,
-  SETDATA    = 18
+  SETDATA = 18,
+  KILL    = 19,
+  PIDOF   = 20,
+  RUN     = 21,
+  SETPRIO = 22
 }svcNumber;
 
 //-----------------------------------------------------------------------------
@@ -146,6 +150,7 @@ semaphore semaphores[MAX_SEMAPHORES];
 #define STATE_READY      2 // has run, can resume at any time
 #define STATE_DELAYED    3 // has run, but now awaiting timer
 #define STATE_BLOCKED    4 // has run, but now blocked by semaphore
+#define STATE_STOPPED    5 // has been stopped by the by the user
 
 #define MAX_TASKS   12       // maximum number of valid tasks
 #define ROUND_ROBIN 0
@@ -156,13 +161,15 @@ uint8_t taskCurrent = 0;   // index of last dispatched task
 uint8_t taskCount = 0;     // total number of valid tasks
 static uint32_t task_point;
 static uint32_t prevSrdBits = 0;
+int8_t priNextTask[MAX_TASKS];
+uint8_t level = 0;
 
 struct _semaphoreData
 {
     char semaphoreName[12];
     uint16_t semaphoreCount;
-    uint16_t waitingTaskNumber;
-    uint32_t waitQueue[5];
+    uint16_t waitingTaskNumber;   //The task who is waiting for the semaphore
+    uint32_t waitQueue[5];        // The entire contant of the semaphore wait list
 
 };
 
@@ -322,27 +329,8 @@ void copyString(const char* fromStr, char* toStr)
 void getIpcsData(struct _semaphoreData* semaphoreFrame)
 {
     uint8_t i,j;
-/*
-    putsUart0("SemaphoreName |");
-    putsUart0(" Count |");
-    putsUart0(" Who's-waiting? \n\r");
 
-    for(i = 0; i < MAX_SEMAPHORES; i++)
-    {
-        convertNumToString(semaphores[i].count);
-        putsUart0("   ");
-        convertNumToString(semaphores[i].queueSize);
-        putsUart0("   ");
-        for( j = 0; j < MAX_QUEUE_SIZE; j++)
-        {
-            convertNumToString(semaphores[i].processQueue[j]);
-            putsUart0("\n\r");
-        }
-
-    }
-*/
-
-    for(i = 0; i < MAX_SEMAPHORES; i++)
+    for(i = 1; i < MAX_SEMAPHORES; i++)
     {
         semaphoreFrame[i].semaphoreCount = semaphores[i].count;
         semaphoreFrame[i].waitingTaskNumber = semaphores[i].queueSize;
@@ -351,9 +339,6 @@ void getIpcsData(struct _semaphoreData* semaphoreFrame)
             semaphoreFrame[i].waitQueue[j] = semaphores[i].processQueue[j];
     }
 
-
-
-    copyString("null\0", semaphoreFrame[0].semaphoreName);
     copyString("keyPressed\0", semaphoreFrame[1].semaphoreName);
     copyString("keyReleased\0", semaphoreFrame[2].semaphoreName);
     copyString("flashReq\0", semaphoreFrame[3].semaphoreName);
@@ -395,6 +380,22 @@ int rtosScheduler()
     return task;
 }
 
+int priorityScheduler()
+{
+    bool ok = false;
+    level = 0;
+    while(!ok)
+    {
+
+        if(level >= taskCount)
+            level = 0;
+        ok = (tcb[priNextTask[level]].state == STATE_READY || tcb[priNextTask[level]].state == STATE_UNRUN);
+        level++;
+    }
+    return priNextTask[level - 1];
+}
+
+
 bool createThread(_fn fn, const char name[], uint8_t priority, uint32_t stackBytes)
 {
     uint8_t num;
@@ -409,8 +410,7 @@ bool createThread(_fn fn, const char name[], uint8_t priority, uint32_t stackByt
     uint8_t i = 0;
     bool found = false;
     // REQUIRED:
-    // store the thread name
-    copyString(name, tcb[i].name);
+
     // allocate stack space and store top of stack in sp and spInit
 
     // add task if room in task list
@@ -431,6 +431,8 @@ bool createThread(_fn fn, const char name[], uint8_t priority, uint32_t stackByt
             tcb[i].state = STATE_UNRUN;
             tcb[i].pid = fn;
 
+            // store the thread name
+            copyString(name, tcb[i].name);
 
              if (i == 0)
              {
@@ -440,9 +442,9 @@ bool createThread(_fn fn, const char name[], uint8_t priority, uint32_t stackByt
              {
                 addr = (uint32_t)tcb[i-1].spInit;
                 tempAddr = mallocFromHeap(1023);
-                putsUart0("malloc= ");
-                convertDec_Hex((uint32_t) tempAddr);
-                putsUart0("\n\r");
+//                putsUart0("malloc= ");
+//                convertDec_Hex((uint32_t) tempAddr);
+//                putsUart0("\n\r");
              }
 
 
@@ -457,9 +459,9 @@ bool createThread(_fn fn, const char name[], uint8_t priority, uint32_t stackByt
 //            prevSrdBits = prevSrdBits | bitMask;          // New bitmask is ORed with the previous bitmask.
 
 
-            putsUart0("spinit= ");
-            convertDec_Hex((uint32_t) tcb[i].spInit);
-            putsUart0("\n\r");
+//            putsUart0("spinit= ");
+//            convertDec_Hex((uint32_t) tcb[i].spInit);
+//            putsUart0("\n\r");
 
             tcb[i].priority = priority;
             tcb[i].srd = (bitMask);
@@ -478,6 +480,19 @@ bool createThread(_fn fn, const char name[], uint8_t priority, uint32_t stackByt
 // REQUIRED: modify this function to restart a thread
 void restartThread(_fn fn)
 {
+    uint8_t i;
+    //loop through the tasks and find the task whose pid matches with the user entered thread name
+    for(i = 0; i < taskCount; i++)
+    {
+        //when found load SP with the original sp from the tcb & make the task UNRUN.
+        if(tcb[i].pid == fn)
+        {
+//            tcb[i].priority =
+            tcb[i].sp = tcb[i].spInit;
+            tcb[i].state = STATE_UNRUN;
+            break;
+        }
+    }
 }
 
 // REQUIRED: modify this function to stop a thread
@@ -485,11 +500,48 @@ void restartThread(_fn fn)
 // NOTE: see notes in class for strategies on whether stack is freed or not
 void stopThread(_fn fn)
 {
+    uint8_t i, index;
+    int8_t y;
+
+    for(i = 0; i < taskCount; i++)
+    {
+        //check if the user entered pid num exists in the tcb
+        if(tcb[i].pid == fn)
+        {
+            semaphore* sem = (semaphore*)tcb[i].semaphore;
+            //if the thread is waiting for the semaphore or blocked then it needs to be removed from the queue
+            if(((tcb[i].state == STATE_DELAYED) || (tcb[i].state == STATE_BLOCKED)) && tcb[i].semaphore != 0)
+            {
+                index = 0;
+                for(index = 0; index < sem->queueSize; index++)
+                    if(sem->processQueue[index] == i)
+                    {
+                        y = index;
+                        //we need to left shift the array elements by 1 in order to remove the task from the wait list
+                        //& fill in the empty spot.
+                        for(; y < sem->queueSize - 1; y++)
+                        {
+                            sem->processQueue[y] = sem->processQueue[y + 1];
+                            sem->queueSize--;
+                        }
+                        sem->processQueue[y] = 0;
+                        // if there was only 1 thread waiting for the the semaphore, after removing it
+                        // we simply make queue size 0.
+                        if(sem->queueSize == 1)
+                            sem->queueSize = 0;
+                    }
+            }
+            tcb[i].state = STATE_STOPPED;
+            break;
+        }
+    }
 }
 
 // REQUIRED: modify this function to set a thread priority
 void setThreadPriority(_fn fn, uint8_t priority)
 {
+    __asm(" SVC  #22");
+
 }
 
 bool createSemaphore(uint8_t semaphore, uint8_t count)
@@ -506,7 +558,15 @@ bool createSemaphore(uint8_t semaphore, uint8_t count)
 void startRtos()
 {
     // Calling the RTOS scheduler to get the current task running.
-    taskCurrent = (uint8_t)rtosScheduler();
+    if(activeScheduler == PRIORITY)
+    {
+        taskCurrent = (uint8_t)priorityScheduler();
+    }
+    else
+    {
+        taskCurrent = (uint8_t)rtosScheduler();
+    }
+
 
     // Setting the stack pointer to the stack space of the process
     // and setting the ASP bit.
@@ -574,6 +634,11 @@ void systickIsr()
         }
     }
 
+    if(preemptionMode)
+    {
+        NVIC_INT_CTRL_R |= NVIC_INT_CTRL_PEND_SV;
+    }
+
 }
 
 // REQUIRED: in coop and preemptive, modify this function to add support for task switching
@@ -595,8 +660,16 @@ void pendSvIsr()
 
     pushStack();
     tcb[taskCurrent].sp = (void*)getPsp();
-    taskCurrent = (uint8_t)rtosScheduler();
 
+
+    if(activeScheduler == PRIORITY)
+    {
+        taskCurrent = (uint8_t)priorityScheduler();
+    }
+    else
+    {
+        taskCurrent = (uint8_t)rtosScheduler();
+    }
 
 
    prevSrdBits = prevSrdBits | tcb[taskCurrent].srd;
@@ -640,6 +713,7 @@ void svCallIsr()
     uint32_t* stack = (uint32_t*)0x20006000;
     uint32_t srd;
     uint32_t type;
+    uint32_t taskPid;
 
 
     psp = getPsp();
@@ -649,16 +723,21 @@ void svCallIsr()
     switch(num)
     {
     case YIELD:
+    {
         NVIC_INT_CTRL_R |= NVIC_INT_CTRL_PEND_SV;       // Call the pendsv ISR
+    }
         break;
 
     case SLEEP:
+    {
         tcb[taskCurrent].ticks = *psp;
         tcb[taskCurrent].state = STATE_DELAYED;
         NVIC_INT_CTRL_R |= NVIC_INT_CTRL_PEND_SV;       // Call the pendsv ISR
+    }
         break;
 
     case WAIT:
+    {
         if(semaphores[*psp].count > 0)
         {
             semaphores[*psp].count--;
@@ -673,9 +752,11 @@ void svCallIsr()
                 NVIC_INT_CTRL_R |= NVIC_INT_CTRL_PEND_SV;
             }
         }
+    }
         break;
 
     case POST:
+    {
         semaphores[*psp].count++;       // Increment the count for the selected semaphore
 
         if(semaphores[*psp].count >= 1 && semaphores[*psp].queueSize > 0)
@@ -689,9 +770,11 @@ void svCallIsr()
             }
             semaphores[*psp].queueSize--;
         }
+    }
         break;
 
     case MALLOC:
+    {
         sizeInBytes = *psp;     //Get the size stored in the R0 register
         prevAddr = (uint32_t)stack;
         num = (((sizeInBytes - 1) / 1024) + 1);
@@ -708,11 +791,13 @@ void svCallIsr()
         setSRAMBits(prevSrdBits);
 
         *psp = (uint32_t)prevAddr;
-
+    }
         break;
 
     case REBOOT:
+    {
         NVIC_APINT_R = (0x05FA0000 | NVIC_APINT_SYSRESETREQ);
+    }
         break;
 
     case SCHED:
@@ -754,6 +839,70 @@ void svCallIsr()
         if (type == 1)
         {
             getIpcsData(arguments);
+        }
+
+    }
+    break;
+
+    case KILL:
+    {
+        taskPid = *psp;
+        stopThread((_fn)taskPid);
+    }
+    break;
+
+    case PIDOF:
+    {
+        uint8_t s;
+
+        for(s = 0; s < taskCount; s++)
+        {
+            putsUart0("pid task ");
+            convertNumToString(s);
+            putsUart0(" ");
+            convertNumToString((uint32_t)tcb[s].pid);
+            putsUart0("\n\r");
+        }
+    }
+        break;
+
+    case RUN:
+    {
+        uint8_t s;
+        uint32_t taskPid;
+
+        char* taskName = (char*) *(psp);
+
+        for(s = 0; s < taskCount; s++)
+        {
+              if(compareString(tcb[s].name, taskName, 16))
+              {
+                  taskPid = (uint32_t)tcb[s].pid;
+                  break;
+              }
+        }
+        restartThread((_fn) taskPid);
+
+    }
+    break;
+
+    case SETPRIO:
+    {
+        uint32_t taskPid;
+        uint8_t newPriority, i;
+
+        taskPid = (uint32_t) *(psp);
+        newPriority = (uint32_t) *(psp + 1);
+
+        //loop through the tasks and find the task whose pid matches with the user entered thread name
+        for(i = 0; i < taskCount; i++)
+        {
+            //when found load SP with the original sp from the tcb & make the task UNRUN.
+            if((uint32_t)tcb[i].pid == taskPid)
+            {
+                tcb[i].priority = newPriority;
+                break;
+            }
         }
 
     }
@@ -974,8 +1123,7 @@ void idle2()
     }
 }
 
-int8_t priNextTask[MAX_TASKS];
-uint8_t level = 0;
+
 
 void sortTaskPriorities()
 {
@@ -992,18 +1140,6 @@ void sortTaskPriorities()
     level = 0;
 }
 
-int priorityScheduler()
-{
-    bool ok = false;
-    while(!ok)
-    {
-        if(level >= taskCount)
-            level = 0;
-        ok = (tcb[priNextTask[level]].state == STATE_READY || tcb[priNextTask[level]].state == STATE_UNRUN);
-        level++;
-    }
-    return priNextTask[level - 1];
-}
 
 void* mallocFromHeap_UserSpace(uint32_t size_in_bytes)
 {
@@ -1180,6 +1316,40 @@ void getData(semaphoreInfo* semDataForm,uint32_t type)
    __asm(" SVC  #18");
 }
 
+/**
+  * @brief  Kills the process (thread) with the matching PID.
+  * @param  pid: PID id number.
+  */
+void kill(uint32_t pid)
+{
+    __asm(" SVC  #19");
+}
+
+void run(char taskName[])
+{
+    __asm(" SVC  #21");
+}
+
+/**
+  * @brief  Turns preemption on or off.
+  * @param  on: 1-on / 0-off
+  */
+void preempt(bool on)
+{
+
+    __asm(" SVC  #17");
+
+}
+
+/**
+  * @brief  Selected priority or round-robin scheduling.
+  * @param  prio_on: 1-scheduled priority selected / 0-scheduled round robin selected
+  */
+void sched(bool prio_on)
+{
+    __asm(" SVC  #16");
+
+}
 /*
 void ipcs(semaphoreInfo* semDataForm)
 {
@@ -1193,7 +1363,7 @@ void shell()
   inputData data;
   uint32_t* ipcsData;
 
-
+  putsUart0("~~~~~~~~~~~Welcom Human~~~~~~~~~~~~~\r\n");
     putsUart0("\r\n>");
 
     while (true)
@@ -1202,8 +1372,8 @@ void shell()
 
         if (matchCommand(&data, "kill", 1))
         {
-            int32_t testNum = getNum(&data);
-//            kill(testNum);
+            uint32_t testNum = getNum(&data);
+            kill(testNum);
         }
         else if (matchCommand(&data, "reboot", 0))
         {
@@ -1232,17 +1402,6 @@ void shell()
                 for(; j < semDataForm[i].waitingTaskNumber; j++)
                     convertNumToString(semDataForm[i].waitQueue[j]);
                 putcUart0('\n');
-            }
-
-
-        }
-        else if (matchCommand(&data, "kill", 1))
-        {
-
-            if (matchCommandArg(&data, "pid"))
-            {
-//                kill(1);
-
             }
         }
         else if (matchCommand(&data, "pmap", 1))
@@ -1280,16 +1439,61 @@ void shell()
         }
         else if (matchCommand(&data, "pidof", 1))
         {
-            if (matchCommandArg(&data, "proc_name"))
+            uint32_t num;
+
+            if (matchCommandArg(&data, "all"))
             {
-//                pidof("test");
+                pidof(&num,"Flash4Hz");
+
             }
         }
         else if (matchCommand(&data, "run", 1))
         {
-            if (matchCommandArg(&data, "proc_name"))
+            if (matchCommandArg(&data, "idle"))
             {
-                setPinValue(RED_LED, 1);
+                run("Idle");
+            }
+
+            else if (matchCommandArg(&data, "lengthyfn"))
+            {
+                run("LengthyFn");
+            }
+            else if (matchCommandArg(&data, "flash4hz"))
+            {
+                run("Flash4Hz");
+            }
+            else if (matchCommandArg(&data, "oneshot"))
+            {
+                run("OneShot");
+            }
+            else if (matchCommandArg(&data, "readkeys"))
+            {
+                run("ReadKeys");
+            }
+            else if (matchCommandArg(&data, "debounce"))
+            {
+                run("Debounce");
+            }
+            else if (matchCommandArg(&data, "important"))
+            {
+                run("Important");
+            }
+            else if (matchCommandArg(&data, "uncoop"))
+            {
+                run("Uncoop");
+            }
+            else if (matchCommandArg(&data, "errant"))
+            {
+                run("Errant");
+            }
+
+
+        }
+        else if (matchCommand(&data, "prio", 1))
+        {
+            if (matchCommandArg(&data, "test"))
+            {
+                setThreadPriority(lengthyFn, 4);
             }
         }
     }
@@ -1339,6 +1543,10 @@ int main(void)
     ok &= createThread(uncooperative, "Uncoop", 6, 1024);
     ok &= createThread(errant, "Errant", 6, 1024);
     ok &= createThread(shell, "Shell", 6, 2048);
+
+    //sorting all the threads based on the levels of priority,will be used if the scheduler schedules
+    //task based on priority.
+    sortTaskPriorities();
 
     // Start up RTOS
     if (ok)

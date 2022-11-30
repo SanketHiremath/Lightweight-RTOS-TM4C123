@@ -19,6 +19,7 @@ typedef struct input_data
 
 
 
+
 void getString(inputData* data);
 bool matchCommand(inputData* data, char userCommand[], uint8_t mode);
 bool matchCommandArg(inputData* data, char userArgument[]);
@@ -27,15 +28,16 @@ void runShell();
 void rebootMCU();
 void ps();
 //void ipcs(semaphoreInfo* DATA);
-void kill(uint32_t pid);
+//void kill(uint32_t pid);
 void pmap(uint32_t pid);
 void preempt(bool on);
 void sched(bool prio_on);
-void pidof(const char name[]);
+void pidof(uint32_t* pidNum, char name[]);
 void convertNumToString(uint32_t num);
 void convertDec_Hex(uint32_t decNum);
 void copyString(const char* fromStr, char* toStr);
 void printfString(uint8_t spaceToReserve, char* s);
+bool compareString(const char fromStrCompare[], const char toStrCompare[], uint8_t strSize);
 
 
 #endif
