@@ -161,8 +161,8 @@ uint8_t taskCurrent = 0;   // index of last dispatched task
 uint8_t taskCount = 0;     // total number of valid tasks
 static uint32_t task_point;
 static uint32_t prevSrdBits = 0;
-int8_t priNextTask[MAX_TASKS];
-uint8_t level = 0;
+int8_t prioTaskQueue[MAX_TASKS];
+uint8_t prioIndex = 0;
 
 struct _semaphoreData
 {
@@ -330,15 +330,16 @@ void getIpcsData(struct _semaphoreData* semaphoreFrame)
 {
     uint8_t i,j;
 
-    for(i = 1; i < MAX_SEMAPHORES; i++)
+    for(i = 0; i < MAX_SEMAPHORES; i++)
     {
         semaphoreFrame[i].semaphoreCount = semaphores[i].count;
         semaphoreFrame[i].waitingTaskNumber = semaphores[i].queueSize;
-        uint8_t j = 0;
-        for(; j < semaphores[i].queueSize; j++)
+        for(j = 0; j < semaphores[i].queueSize; j++)
+        {
             semaphoreFrame[i].waitQueue[j] = semaphores[i].processQueue[j];
+        }
     }
-
+    copyString("none\0", semaphoreFrame[0].semaphoreName);
     copyString("keyPressed\0", semaphoreFrame[1].semaphoreName);
     copyString("keyReleased\0", semaphoreFrame[2].semaphoreName);
     copyString("flashReq\0", semaphoreFrame[3].semaphoreName);
@@ -383,16 +384,17 @@ int rtosScheduler()
 int priorityScheduler()
 {
     bool ok = false;
-    level = 0;
+    prioIndex = 0;
     while(!ok)
     {
-
-        if(level >= taskCount)
-            level = 0;
-        ok = (tcb[priNextTask[level]].state == STATE_READY || tcb[priNextTask[level]].state == STATE_UNRUN);
-        level++;
+        if(prioIndex >= taskCount)
+        {
+            prioIndex = 0;
+        }
+        ok = (tcb[prioTaskQueue[prioIndex]].state == STATE_READY || tcb[prioTaskQueue[prioIndex]].state == STATE_UNRUN);
+        prioIndex++;
     }
-    return priNextTask[level - 1];
+    return prioTaskQueue[prioIndex-1];
 }
 
 
@@ -1127,17 +1129,27 @@ void idle2()
 
 void sortTaskPriorities()
 {
-    for(level = 0; level < MAX_TASKS; level++)
-        priNextTask[level] = -1;
-    level = 0;
     int8_t priority = 0;
-    uint8_t j = 0;
-    // The max priority level is 7
+    uint8_t i;
+
+    // initializing a big array with -1 priority.
+    for(prioIndex = 0; prioIndex < MAX_TASKS; prioIndex++)
+    {
+        prioTaskQueue[prioIndex] = -1;
+    }
+    prioIndex = 0;
+    //sorting all the threads based on decreasing order of priority and storing it in an array.
     for(priority = 0; priority <= 7; priority++)
-        for(j = 0; j < taskCount && j < MAX_TASKS; j++)
-            if(tcb[j].priority == priority)
-                priNextTask[level++] = j;
-    level = 0;
+    {
+        for(i = 0; i < taskCount && i < MAX_TASKS; i++)
+        {
+            if(tcb[i].priority == priority)
+            {
+                prioTaskQueue[prioIndex++] = i;
+            }
+        }
+    }
+    prioIndex = 0;
 }
 
 
@@ -1387,21 +1399,27 @@ void shell()
         {
             uint8_t i, j;
             semaphoreInfo semDataForm[5];
-//            ipcs(semDataForm);
-            putsUart0("Semaphore Name");
+
+            putsUart0("-----------------------------------------\n\r");
+            putsUart0("SemaphoreName");
             putsUart0(" Count");
-            putsUart0(" Who's waiting? \n\r");
+            putsUart0(" WaitingTask? \n\r");
+            putsUart0("-----------------------------------------\n\r");
             getData(semDataForm, 1);
 
-            i = 0;
-            for(; i < 5; i++)
+            for(i = 0; i < 5; i++)
             {
-                printfString(14, semDataForm[i].semaphoreName);
+                putsUart0(semDataForm[i].semaphoreName);
+                putsUart0("  ");
                 convertNumToString(semDataForm[i].semaphoreCount);
-                j = 0;
-                for(; j < semDataForm[i].waitingTaskNumber; j++)
+                putsUart0("  ");
+
+                for(j = 0; j < semDataForm[i].waitingTaskNumber; j++)
+                {
                     convertNumToString(semDataForm[i].waitQueue[j]);
-                putcUart0('\n');
+
+                }
+                putsUart0("\r\n");
             }
         }
         else if (matchCommand(&data, "pmap", 1))

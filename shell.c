@@ -55,7 +55,6 @@ void pmap(uint32_t pid)
   */
 void pidof(uint32_t* pidNum, char name[])
 {
-    putsUart0("\r\n>");
     __asm(" SVC  #20");
 }
 
@@ -63,12 +62,7 @@ void pidof(uint32_t* pidNum, char name[])
 
 //----------------------------------------------------------------//
 
-uint32_t strLen(const char* str)
-{
-    uint32_t len = 0;
-    while(str[len]) len++;
-    return len;
-}
+
 
 void convertDec_Hex(uint32_t decNum)
 {
@@ -123,14 +117,7 @@ void convertNumToString(uint32_t num)
 }
 
 
-//change
-void printfString(uint8_t spaceToReserve, char* s)
-{
-    putsUart0(s);
-    spaceToReserve -= strLen(s);
-    while(spaceToReserve--)
-        putcUart0(' ');
-}
+
 
 /**
   * @brief This function compares each character of  "fromStrCompare" with "toStrCompare".
